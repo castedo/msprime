@@ -128,6 +128,16 @@ void __msp_safe_free(void **ptr);
 size_t idx_1st_upper_bound(const double *values, size_t n_values, double query);
 size_t idx_1st_strict_upper_bound(
     const double *elements, size_t n_elements, double query);
+inline const double *ptr_1st_upper_bound(
+    const double *start, const double *stop, double query);
+inline const double *ptr_1st_strict_upper_bound(
+    const double *start, const double *stop, double query);
+
+bool doubles_almost_equal(double a, double b, double eps);
+
+size_t probability_list_select(double u, size_t num_probs, double const *probs);
+
+/* `inline` function implementations */
 
 inline const double *
 ptr_1st_upper_bound(const double *start, const double *stop, double query)
@@ -142,9 +152,5 @@ ptr_1st_strict_upper_bound(const double *start, const double *stop, double query
     assert(start <= stop);
     return start + idx_1st_strict_upper_bound(start, (size_t)(stop - start), query);
 }
-
-bool doubles_almost_equal(double a, double b, double eps);
-
-size_t probability_list_select(double u, size_t num_probs, double const *probs);
 
 #endif /*__UTIL_H__*/

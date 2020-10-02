@@ -109,7 +109,7 @@ rate_map_alloc_single(rate_map_t *self, double sequence_length, double rate)
 int
 rate_map_free(rate_map_t *self)
 {
-    fast_search_free(&(self->position_lookup));
+    fast_search_free(&self->position_lookup);
     msp_safe_free(self->position);
     msp_safe_free(self->rate);
     msp_safe_free(self->cumulative_mass);
@@ -167,7 +167,7 @@ rate_map_position_to_mass(rate_map_t *self, double pos)
         return 0;
     }
     assert(pos <= position[self->size]);
-    index = fast_search_idx_strict_upper(&(self->position_lookup), pos);
+    index = fast_search_idx_strict_upper(&self->position_lookup, pos);
     assert(index == idx_1st_strict_upper_bound(position, self->size + 1, pos));
     assert(index > 0);
     index--;
@@ -216,7 +216,7 @@ rate_map_shift_by_mass(rate_map_t *self, double pos, double mass)
  * `fast_search_t` is a lookup table pointing to an array of `double`s
  * (the "elements"). It does not own the array but does point to all its memory.
  *
- * It's purpose is speed up the search for a "query" value in that array of
+ * Its purpose is to speed up the search for a "query" value in that array of
  * elements. The `fast_search_idx_strict_upper` function is essentially a drop-in
  * replacement for the function `idx_1st_strict_upper_bound` (which in turn is
  * a drop-in replacement for the C++ <algorithm> library function
@@ -248,6 +248,53 @@ rate_map_shift_by_mass(rate_map_t *self, double pos, double mass)
  * the non-negative integers is coded in the `test_fast_search_identity`
  * unit test.  An example of alternative linear sequences with different
  * `query_multiplier` are coded in `test_fast_search_2powers`.
+ *
+ * Consider example target array of elements (memory address, values):
+ *
+ * 0xECE0, 0.0
+ * 0xECE1, 0.1
+ * 0xECE2, 0.8
+ * 0xECE3, 2.7
+ * 0xECE4, 6.4
+ * 0xECE5, ___ (the end, past last element of the array)
+ *
+ * The power of 2 greater or equal to the maximum element is 8.
+ * The number of memory address steps to the maximum element is 4.
+ * The power of 2 greater or equal to that number of steps is also 4.
+ * Thus the query multiplier is going to be 0.5.
+ * The lookup table is going to start with a pointer to the last of the elements.
+ * The last pointer in the lookup table will point to the end of the element array.
+ * The lookup table should be just the right size so that rescaling (and truncating) a
+ * query equaling the maximum element will result in an index to the last pointer
+ * in the lookup table. This is `trunc(6.4 * 0.5) = 3`. Thus the lookup table
+ * will be `(1 + 1 + 3) = 5` pointers.
+ *
+ * The lookup table of pointers will handle the following 5 query ranges:
+ *
+ * [0.0, 2.0)
+ * [2.0, 4.0)
+ * [4.0, 6.0)
+ * [6.0, 8.0)
+ * [8.0, INFINITY)
+ *
+ * with each lookup pointer pointing to the first upper bound to the minimum in those
+ * query ranges. Thus we get the following lookup table of pointers:
+ *
+ * [0] 0xECE0 (0.0 in elements is upper bound to query range minimum 0.0)
+ * [1] 0xECE3 (2.7 in elements is upper bound to query range minimum 2.0)
+ * [2] 0xECE4 (6.4 in elements is upper bound to query range minimum 4.0)
+ * [4] 0xECE4 (6.4 in elements is upper bound to query range minimum 6.0)
+ * [5] 0xECE5 (no upper bound in elements to query range minimum 8.0)
+ *
+ * Consider the search with a query of `3.3`. This query will be multiplied by
+ * the query multiplier of 0.5 and then truncated to get lookup index `1`. This
+ * corresponds the query range [2.0, 4.0) and all queries in that range when
+ * multiplied by the query multiplier and truncated will result in lookup index
+ * `1`. This entry in the lookup table maps to 0xECE3 which contains the value
+ * 2.7. The next entry in the lookup table corresponds to the query range [4.0, 6.0)
+ * and has 0xECE4 pointing to element value 6.4. Thus a much smaller binary
+ * search will be performed on the memory range [0xECE3, 0xECE4) which will
+ * result in finding 0xECE4 as the first strict upper bound to the query of `3.3`.
  */
 
 #if FLT_RADIX != 2
@@ -275,54 +322,30 @@ valid_sorted_nonempty_array(const double *array, size_t size)
     return true;
 }
 
-static bool
-fast_search_valid(fast_search_t *self)
-{
-    const double *start, *stop;
-    size_t idx;
-
-    if (!(self->query_multiplier >= 0.0)) { // NaN not valid
-        return false;
-    }
-    if (self->num_lookups < 2) {
-        return false;
-    }
-    for (idx = 1; idx < self->num_lookups; idx++) {
-        if (self->lookups[idx - 1] > self->lookups[idx]) {
-            return false;
-        }
-    }
-    start = self->lookups[0];
-    stop = self->lookups[self->num_lookups - 1];
-    if (stop <= start || start[0] != 0.0) {
-        return false;
-    }
-    return valid_sorted_nonempty_array(start, (size_t)(stop - start));
-}
-
 static int
 fast_search_init_lookups(fast_search_t *self, const double *elements, size_t n_elements)
 {
     int ret = 0;
     const double *ptr, *stop;
     uint32_t idx;
-    double query;
+    double min_query;
 
     self->lookups[0] = elements;
     ptr = elements;
     stop = elements + n_elements;
     for (idx = 1; idx < self->num_lookups; idx++) {
-        query = idx / self->query_multiplier;
-        while (ptr < stop && *ptr < query) {
+        /* `min_query` is the smallest possible query that will get rescaled to idx */
+        min_query = idx / self->query_multiplier;
+        /* move ptr to the first upper bound of min_query in elements */
+        while (ptr < stop && *ptr < min_query) {
             ptr++;
         }
+        /* The query range of [A, B) maps to `idx` where
+         * A = idx/query_multiplier and B = (idx + 1)/query_multiplier).
+         * Want `lookup[idx]` to point to the first upper bound of A in the elements.
+         */
         self->lookups[idx] = ptr;
     }
-    if (!fast_search_valid(self)) {
-        ret = MSP_ERR_ASSERTION_FAILED;
-        goto out;
-    }
-out:
     return ret;
 }
 
@@ -358,11 +381,7 @@ fast_search_alloc(fast_search_t *self, const double *elements, size_t n_elements
         ret = MSP_ERR_BAD_PARAM_VALUE;
         goto out;
     }
-    if (n_elements >= max_input_size) {
-        ret = MSP_ERR_ASSERTION_FAILED;
-        goto out;
-    }
-    if (elements[0] != 0.0 || isnan(elements[0])) {
+    if (elements[0] != 0.0 || n_elements >= max_input_size) {
         ret = MSP_ERR_BAD_PARAM_VALUE;
         goto out;
     }
@@ -372,6 +391,9 @@ fast_search_alloc(fast_search_t *self, const double *elements, size_t n_elements
         goto out;
     }
 
+    /* query_multiplier will rescale queries to be a desired lookup table index
+     * (plus a fraction). To avoid rounding problems query_multiplier is a power of 2.
+     */
     self->query_multiplier
         = higher_power_of_2((double) n_elements - 1) / higher_power_of_2(max_element);
     if (!isfinite(self->query_multiplier)) {
@@ -379,6 +401,14 @@ fast_search_alloc(fast_search_t *self, const double *elements, size_t n_elements
     }
     assert(isfinite(self->query_multiplier));
 
+    /* Many different sizes for the lookup table are reasonable. The lookup
+     * table size choice here is a simple one that will use roughly the same amount
+     * of memory as the target array of element values.
+     * The first lookup pointer will point to the start of the elements array.
+     * The last lookup pointer will point to the end, just past the last, element of the
+     * array. The rest of the lookup pointers point to (max_element * query_multiplier)
+     * non-zero element values.
+     */
     self->num_lookups = 2 + (size_t)(max_element * self->query_multiplier);
 
     self->lookups = malloc(self->num_lookups * sizeof(*(self->lookups)));
@@ -399,38 +429,13 @@ fast_search_free(fast_search_t *self)
     return 0;
 }
 
-/*  PRE-CONDITIONS:
- *      1) query >= 0.0
- *      2) self is valid fast_search_t
+/* PRE-CONDITIONS:
+ *   1) query >= 0.0
  * RETURNS:
- *      See idx_1st_upper_bound
- */
-const double *
-fast_search_ptr_upper(fast_search_t *self, double query)
-{
-    const double **lookups = self->lookups;
-    double fidx; // index that can be way larger than max size_t
-    size_t idx;
-    const double *ret;
-
-    assert(query >= 0.0);
-    fidx = query * self->query_multiplier;
-    if (fidx >= self->num_lookups - 1) {
-        ret = lookups[self->num_lookups - 1];
-    } else {
-        idx = (size_t) fidx;
-        ret = ptr_1st_upper_bound(lookups[idx], lookups[idx + 1], query);
-    }
-    assert(
-        ret == ptr_1st_upper_bound(lookups[0], lookups[self->num_lookups - 1], query));
-    return ret;
-}
-
-/*  PRE-CONDITIONS:
- *      1) query >= 0.0
- *      2) self is valid fast_search_t
- * RETURNS:
- *      See idx_1st_strict_upper_bound
+ *   See idx_1st_strict_upper_bound
+ * NOTE:
+ *   A non-strict version of this function can be achieved by reimplementing it
+ *   to call a non-strict version of `ptr_1st_strict_upper_bound`
  */
 const double *
 fast_search_ptr_strict_upper(fast_search_t *self, double query)
@@ -438,21 +443,37 @@ fast_search_ptr_strict_upper(fast_search_t *self, double query)
     const double **lookups = self->lookups;
     double fidx; // index that can be way larger than max size_t
     size_t idx;
-    const double *ret;
+    const double *ptr;
 
     assert(query >= 0.0);
+    /* query_multiplier was set to "rescale" query to the desired lookup table index.
+     * Warning: query times query_multiplier might be huge, way bigger than ULLONG_MAX.
+     */
     fidx = query * self->query_multiplier;
-    if (fidx >= self->num_lookups - 1) {
-        ret = lookups[self->num_lookups - 1];
-    } else {
+    if (fidx < self->num_lookups - 1) {
+        /* The floating point rescale `fidx` is not huge, it can be truncated now */
         idx = (size_t) fidx;
-        ret = ptr_1st_strict_upper_bound(lookups[idx], lookups[idx + 1], query);
+        /* The query range of [A, B) maps to `idx` where
+         * A = idx/query_multiplier and B = (idx + 1)/query_multiplier).
+         * The lookup table has been initialized such that
+         * `lookup[idx]` and `lookup[idx+1]` points to the first upper bound of A and B
+         * respectively in the element values.
+         */
+        ptr = ptr_1st_strict_upper_bound(lookups[idx], lookups[idx + 1], query);
+    } else {
+        ptr = lookups[self->num_lookups - 1];
     }
-    assert(ret
+    assert(ptr
            == ptr_1st_strict_upper_bound(
                   lookups[0], lookups[self->num_lookups - 1], query));
-    return ret;
+    /* function interface is in terms of index to target array of element values */
+    return ptr;
 }
 
-extern inline size_t fast_search_idx_upper(fast_search_t *self, double query);
+/* `extern inline` declarations
+ *  Due to compiler/linker limitations of C99, `inline` function declarations
+ *  must be restated with the `extern` keyword in one ".c" file
+ *  (or never declared in header files and declared with `static`)
+ */
+
 extern inline size_t fast_search_idx_strict_upper(fast_search_t *self, double query);

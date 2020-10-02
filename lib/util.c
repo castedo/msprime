@@ -376,12 +376,6 @@ idx_1st_strict_upper_bound(const double *elements, size_t n_elements, double que
     return stop;
 }
 
-extern inline const double *ptr_1st_upper_bound(
-    const double *start, const double *stop, double query);
-
-extern inline const double *ptr_1st_strict_upper_bound(
-    const double *start, const double *stop, double query);
-
 bool
 doubles_almost_equal(double a, double b, double eps)
 {
@@ -431,3 +425,14 @@ probability_list_select(double u, size_t num_probs, double const *probs)
 {
     return (num_probs > 0 ? positive_interval_select(u, num_probs - 1, probs) : 0);
 }
+
+/* `extern inline` declarations
+ *  Due to compiler/linker limitations of C99, `inline` function declarations
+ *  must be restated with the `extern` keyword in one ".c" file
+ *  (or never declared in header files and declared with `static`)
+ */
+
+extern inline const double *ptr_1st_upper_bound(
+    const double *start, const double *stop, double query);
+extern inline const double *ptr_1st_strict_upper_bound(
+    const double *start, const double *stop, double query);
