@@ -23,11 +23,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-typedef struct {
-    double query_multiplier;
-    size_t num_lookups;
-    const double **lookups;
-} fast_search_t;
+#include "util.h"
 
 typedef struct {
     size_t size;
@@ -36,11 +32,6 @@ typedef struct {
     double *cumulative_mass;
     fast_search_t position_lookup;
 } rate_map_t;
-
-int fast_search_alloc(fast_search_t *self, const double *values, size_t n_values);
-int fast_search_free(fast_search_t *self);
-const double *fast_search_ptr_strict_upper(fast_search_t *self, double query);
-inline size_t fast_search_idx_strict_upper(fast_search_t *self, double query);
 
 int rate_map_alloc(rate_map_t *self, size_t size, double *position, double *value);
 int rate_map_alloc_single(rate_map_t *self, double sequence_length, double value);
@@ -56,14 +47,5 @@ double rate_map_mass_between(rate_map_t *self, double left, double right);
 double rate_map_mass_to_position(rate_map_t *self, double mass);
 double rate_map_position_to_mass(rate_map_t *self, double position);
 double rate_map_shift_by_mass(rate_map_t *self, double pos, double mass);
-
-/* `inline` function implementations */
-
-inline size_t
-fast_search_idx_strict_upper(fast_search_t *self, double query)
-{
-    const double *ptr = fast_search_ptr_strict_upper(self, query);
-    return (size_t)(ptr - self->lookups[0]);
-}
 
 #endif /*__RATE_MAP_H__*/

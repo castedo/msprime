@@ -125,32 +125,80 @@ void __msp_safe_free(void **ptr);
 
 #define msp_safe_free(pointer) __msp_safe_free((void **) &(pointer))
 
-size_t idx_1st_upper_bound(const double *values, size_t n_values, double query);
-size_t idx_1st_strict_upper_bound(
-    const double *elements, size_t n_elements, double query);
-inline const double *ptr_1st_upper_bound(
-    const double *start, const double *stop, double query);
-inline const double *ptr_1st_strict_upper_bound(
-    const double *start, const double *stop, double query);
-
 bool doubles_almost_equal(double a, double b, double eps);
 
 size_t probability_list_select(double u, size_t num_probs, double const *probs);
 
-/* `inline` function implementations */
+/* binary search functions */
 
-inline const double *
-ptr_1st_upper_bound(const double *start, const double *stop, double query)
+size_t idx_1st_upper_bound(const double *values, size_t n_values, double query);
+size_t idx_1st_strict_upper_bound(
+    const double *elements, size_t n_elements, double query);
+
+typedef struct {
+    const double *elements;
+    double query_multiplier;
+    double query_cutoff;
+    size_t num_lookups;
+    unsigned *lookups;
+} fast_search_t;
+
+int fast_search_alloc(fast_search_t *self, const double *values, size_t n_values);
+int fast_search_free(fast_search_t *self);
+inline size_t fast_search_idx_strict_upper(fast_search_t *self, double query);
+
+/***********************************
+ * INLINE FUNCTION IMPLEMENTATIONS *
+ ***********************************/
+
+inline size_t
+sub_idx_1st_strict_upper_bound(
+    const double *base, size_t start, size_t stop, double query)
 {
-    assert(start <= stop);
-    return start + idx_1st_upper_bound(start, (size_t)(stop - start), query);
+    while (start < stop) {
+        size_t mid = (start + stop) / 2;
+        assert(base[start] <= base[mid]);
+        if (!(base[mid] > query)) { // match NaN logic of std::upper_bound
+            start = mid + 1;
+        } else {
+            stop = mid;
+        }
+    }
+    return stop;
 }
 
-inline const double *
-ptr_1st_strict_upper_bound(const double *start, const double *stop, double query)
+/* PRE-CONDITIONS:
+ *   1) query >= 0.0
+ * RETURNS:
+ *   See idx_1st_strict_upper_bound
+ * NOTE:
+ *   A non-strict version of this function can be achieved by reimplementing it
+ *   to call a non-strict version of `idx_1st_strict_upper_bound`
+ */
+inline size_t
+fast_search_idx_strict_upper(fast_search_t *self, double query)
 {
-    assert(start <= stop);
-    return start + idx_1st_strict_upper_bound(start, (size_t)(stop - start), query);
+    size_t ret;
+    unsigned *lookups = self->lookups;
+    assert(query >= 0.0);
+    if (query < self->query_cutoff) {
+        int64_t idx = (int64_t)(query * self->query_multiplier);
+        /* The query range of [A, B) maps to `idx` where
+         * A = idx/query_multiplier and B = (idx + 1)/query_multiplier).
+         * The lookup table has been initialized such that
+         * `lookup[idx]` and `lookup[idx+1]` points to the first upper bound of A and B
+         * respectively in the element values.
+         */
+        ret = sub_idx_1st_strict_upper_bound(
+            self->elements, lookups[idx], lookups[idx + 1], query);
+    } else {
+        ret = lookups[self->num_lookups - 1];
+    }
+    assert(ret
+           == idx_1st_strict_upper_bound(
+                  self->elements, lookups[self->num_lookups - 1], query));
+    /* function interface is in terms of index to target array of element values */
+    return ret;
 }
 
 #endif /*__UTIL_H__*/
